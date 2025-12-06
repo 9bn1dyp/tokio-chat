@@ -10,7 +10,7 @@ async fn client_read_loop(
 ) -> anyhow::Result<()> {
     loop {
         let mut bytes = rx.recv().await?;
-        bytes.push('\n');
+        bytes.push_str("\r\n");
 
         if let Err(e) = socket_write.write_all(bytes.as_bytes()).await {
             eprintln!("Failed reading chat {e}")
