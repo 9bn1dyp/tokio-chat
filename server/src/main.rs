@@ -95,3 +95,24 @@ async fn run(addr: &str) -> anyhow::Result<()> {
 async fn main() -> anyhow::Result<()> {
     run("127.0.0.1:8080").await
 }
+
+#[tokio::test]
+async fn test_send_str() {
+    use std::time::Duration;
+    use tokio::net::TcpStream;
+    use tokio_util::codec::Framed;
+
+    // let server init and sleep
+    tokio::spawn(async { run("127.0.0.1:8080").await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let stream = TcpStream::connect("127.0.0.1:8080").await.unwrap();
+    let mut framed = Framed::new(stream, LinesCodec::new());
+
+    let msg = "{\"username\":\"test username\",\"message\":\"test message\"}";
+
+    framed.send(&msg).await.unwrap();
+    let reply = framed.next().await.unwrap().unwrap();
+
+    assert_eq!(reply, msg);
+}
