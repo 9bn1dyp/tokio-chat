@@ -1,4 +1,3 @@
-use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
@@ -65,9 +64,8 @@ async fn client_write_loop(
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+async fn run(addr: &str) -> anyhow::Result<()> {
+    let listener = TcpListener::bind(addr).await?;
     // broadcast
     let (tx, _) = broadcast::channel::<Message>(64);
     loop {
@@ -91,4 +89,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // write is writing to receivers (broadcast input), requires read socket
         tokio::spawn(client_write_loop(tx_clone, reader));
     }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    run("127.0.0.1:8080").await
 }
