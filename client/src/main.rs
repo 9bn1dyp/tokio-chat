@@ -1,3 +1,4 @@
+use crossbeam::channel::{Receiver, Sender, unbounded};
 use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
@@ -7,16 +8,21 @@ use ratatui::{
     text::Line,
     widgets::{Block, Paragraph, Widget},
 };
-use std::io;
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpStream;
+use std::thread;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct App {
     input: Input,
     input_mode: InputMode,
     messages: Vec<String>,
     exit: bool,
+    sender: Sender<String>,
+    receiver: Receiver<String>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +33,10 @@ enum InputMode {
 }
 
 impl App {
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> anyhow::Result<()> {
         while !self.exit {
+            self.ui_rec();
+
             terminal.draw(|frame| self.draw(frame))?;
             self.handle_events()?;
         }
@@ -40,7 +48,7 @@ impl App {
     }
 
     // see event poll
-    fn handle_events(&mut self) -> io::Result<()> {
+    fn handle_events(&mut self) -> anyhow::Result<()> {
         let event = event::read()?;
         if let Event::Key(key) = event {
             match self.input_mode {
@@ -69,17 +77,22 @@ impl App {
     }
 
     fn stop_editing(&mut self) {
+        self.input.reset();
         self.input_mode = InputMode::Normal
     }
 
     fn push_message(&mut self) {
-        // prepend " "
-        let msg = format!(" {}", self.input.value_and_reset());
-        self.messages.push(msg)
+        self.sender.send(self.input.value_and_reset()).unwrap()
     }
 
     fn exit(&mut self) {
         self.exit = true;
+    }
+
+    fn ui_rec(&mut self) {
+        while let Ok(value) = self.receiver.try_recv() {
+            self.messages.push(format!(" {}", value));
+        }
     }
 }
 
@@ -124,11 +137,64 @@ impl Widget for &App {
     }
 }
 
-fn main() -> io::Result<()> {
+// receive from ui send to server
+fn server_rec(mut stream: TcpStream, receiver: Receiver<String>) {
+    while let Ok(value) = receiver.recv() {
+        // append \n
+        stream
+            .write_all(
+                format!(
+                    "{{\"username\":\"test username\",\"message\":\"{}\"}}\n",
+                    value
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+    }
+}
+
+// receive from server send to ui
+fn server_sen(mut stream: TcpStream, sender: Sender<String>) {
+    let mut buf = [0u8; 1024];
+    loop {
+        let n = stream.read(&mut buf).unwrap();
+        if n == 0 {
+            break;
+        }
+        let msg = String::from_utf8_lossy(&buf[..n]).to_string();
+        sender.send(msg).unwrap();
+    }
+}
+
+fn ui(sender: Sender<String>, receiver: Receiver<String>) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
-    let app_result = App::default().run(&mut terminal);
+    let app_result = App {
+        input: "".into(),
+        input_mode: InputMode::Normal,
+        messages: vec![],
+        exit: false,
+        sender,
+        receiver,
+    }
+    .run(&mut terminal);
     ratatui::restore();
     app_result
+}
+
+fn main() {
+    let (s1, r1) = unbounded::<String>();
+    let (s2, r2) = unbounded::<String>();
+    let stream = TcpStream::connect("127.0.0.1:8080").unwrap();
+    let stream2 = stream.try_clone().unwrap();
+
+    // UI sends to Server, Server sends to Receiver
+    let ui_handle = thread::spawn(|| ui(s1, r2));
+    let server_rec_handle = thread::spawn(move || server_rec(stream, r1));
+    let server_sen_handle = thread::spawn(move || server_sen(stream2, s2));
+
+    ui_handle.join().unwrap().unwrap();
+    server_rec_handle.join().unwrap();
+    server_sen_handle.join().unwrap();
 }
 
 #[cfg(test)]
