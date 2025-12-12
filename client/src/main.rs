@@ -1,19 +1,29 @@
-use std::io;
-
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     DefaultTerminal, Frame,
     buffer::Buffer,
+    crossterm::event::{self, Event, KeyCode},
     layout::{Constraint, Direction, Layout, Rect},
-    style::Stylize,
+    style::{Color, Style, Stylize},
     text::Line,
     widgets::{Block, Paragraph, Widget},
 };
+use std::io;
+use tui_input::Input;
+use tui_input::backend::crossterm::EventHandler;
 
 #[derive(Debug, Default)]
 pub struct App {
+    input: Input,
+    input_mode: InputMode,
     messages: Vec<String>,
     exit: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum InputMode {
+    #[default]
+    Normal,
+    Editing,
 }
 
 impl App {
@@ -31,19 +41,41 @@ impl App {
 
     // see event poll
     fn handle_events(&mut self) -> io::Result<()> {
-        match event::read()? {
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.handle_key_event(key_event)
+        let event = event::read()?;
+        if let Event::Key(key) = event {
+            match self.input_mode {
+                // Normal mode keyboard handling
+                InputMode::Normal => match key.code {
+                    KeyCode::Char('e') => self.start_editing(),
+                    KeyCode::Char('q') => self.exit(),
+                    _ => {}
+                },
+
+                // Editing mode keyboard handling
+                InputMode::Editing => match key.code {
+                    KeyCode::Enter => self.push_message(),
+                    KeyCode::Esc => self.stop_editing(),
+                    _ => {
+                        self.input.handle_event(&event);
+                    }
+                },
             }
-            _ => {}
-        };
+        }
         Ok(())
     }
 
-    fn handle_key_event(&mut self, key_event: KeyEvent) {
-        if let KeyCode::Char('q') = key_event.code {
-            self.exit();
-        }
+    fn start_editing(&mut self) {
+        self.input_mode = InputMode::Editing
+    }
+
+    fn stop_editing(&mut self) {
+        self.input_mode = InputMode::Normal
+    }
+
+    fn push_message(&mut self) {
+        // prepend " "
+        let msg = format!(" {}", self.input.value_and_reset());
+        self.messages.push(msg)
     }
 
     fn exit(&mut self) {
@@ -78,11 +110,16 @@ impl Widget for &App {
             .render(outer_layout[0], buf);
 
         // Bottom box for input
-        // todo()! add red/green to sginify if we're connected
-        let bottom_title = Line::from(" Connection: ".bold());
-        Paragraph::new(Line::from(vec![" Chat".into()]))
-            .left_aligned()
-            .block(Block::bordered().title(bottom_title))
+        let width = area.width.max(3) - 3;
+        let scroll = self.input.visual_scroll(width as usize);
+        let style = match self.input_mode {
+            InputMode::Normal => Style::default(),
+            InputMode::Editing => Color::Yellow.into(),
+        };
+        Paragraph::new(self.input.value())
+            .style(style)
+            .scroll((0, scroll as u16))
+            .block(Block::bordered().title(" Input "))
             .render(outer_layout[1], buf);
     }
 }
