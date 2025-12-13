@@ -1,3 +1,5 @@
+use client::Message;
+use client::User;
 use crossbeam::channel::{Receiver, Sender, unbounded};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -19,10 +21,11 @@ use tui_input::backend::crossterm::EventHandler;
 pub struct App {
     input: Input,
     input_mode: InputMode,
+    username: String,
     messages: Vec<String>,
     exit: bool,
-    sender: Sender<String>,
-    receiver: Receiver<String>,
+    sender: Sender<Message>,
+    receiver: Receiver<Message>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -77,12 +80,17 @@ impl App {
     }
 
     fn stop_editing(&mut self) {
-        self.input.reset();
         self.input_mode = InputMode::Normal
     }
 
     fn push_message(&mut self) {
-        self.sender.send(self.input.value_and_reset()).unwrap()
+        // format to Message type here
+        let msg = Message {
+            username: User(self.username.clone()),
+            message: self.input.value_and_reset(),
+        };
+        // send input text via server sender
+        self.sender.send(msg).unwrap();
     }
 
     fn exit(&mut self) {
@@ -90,8 +98,11 @@ impl App {
     }
 
     fn ui_rec(&mut self) {
+        // receive Message type from receiver<Message>
         while let Ok(value) = self.receiver.try_recv() {
-            self.messages.push(format!(" {}", value));
+            // format Message and push into messages Vec
+            self.messages
+                .push(format!(" {} - {}", value.username, value.message));
         }
     }
 }
@@ -138,14 +149,14 @@ impl Widget for &App {
 }
 
 // receive from ui send to server
-fn server_rec(mut stream: TcpStream, receiver: Receiver<String>) {
+fn server_rec(mut stream: TcpStream, receiver: Receiver<Message>) {
     while let Ok(value) = receiver.recv() {
-        // append \n
+        // append \n and format to json
         stream
             .write_all(
                 format!(
-                    "{{\"username\":\"test username\",\"message\":\"{}\"}}\n",
-                    value
+                    "{{\"username\":\"{}\",\"message\":\"{}\"}}\n",
+                    value.username, value.message
                 )
                 .as_bytes(),
             )
@@ -154,24 +165,30 @@ fn server_rec(mut stream: TcpStream, receiver: Receiver<String>) {
 }
 
 // receive from server send to ui
-fn server_sen(mut stream: TcpStream, sender: Sender<String>) {
+fn server_sen(mut stream: TcpStream, sender: Sender<Message>) -> anyhow::Result<()> {
     let mut buf = [0u8; 1024];
     loop {
         let n = stream.read(&mut buf).unwrap();
         if n == 0 {
             break;
         }
+        // convert bytes to json string
         let msg = String::from_utf8_lossy(&buf[..n]).to_string();
-        sender.send(msg).unwrap();
+        // try convert to message struct
+        let message_struct: Message = serde_json::from_str(&msg)?;
+        // send to ui receiver
+        sender.send(message_struct).unwrap();
     }
+    Ok(())
 }
 
-fn ui(sender: Sender<String>, receiver: Receiver<String>) -> anyhow::Result<()> {
+fn ui(sender: Sender<Message>, receiver: Receiver<Message>) -> anyhow::Result<()> {
     let mut terminal = ratatui::init();
     let app_result = App {
         input: "".into(),
         input_mode: InputMode::Normal,
         messages: vec![],
+        username: String::from("Guest"),
         exit: false,
         sender,
         receiver,
@@ -182,8 +199,8 @@ fn ui(sender: Sender<String>, receiver: Receiver<String>) -> anyhow::Result<()> 
 }
 
 fn main() {
-    let (s1, r1) = unbounded::<String>();
-    let (s2, r2) = unbounded::<String>();
+    let (s1, r1) = unbounded::<Message>();
+    let (s2, r2) = unbounded::<Message>();
     let stream = TcpStream::connect("127.0.0.1:8080").unwrap();
     let stream2 = stream.try_clone().unwrap();
 
@@ -194,7 +211,7 @@ fn main() {
 
     ui_handle.join().unwrap().unwrap();
     server_rec_handle.join().unwrap();
-    server_sen_handle.join().unwrap();
+    server_sen_handle.join().unwrap().unwrap();
 }
 
 #[cfg(test)]

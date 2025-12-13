@@ -86,6 +86,8 @@ dependencies = [
  "crossbeam",
  "crossterm 0.29.0",
  "ratatui",
+ "serde",
+ "serde_json",
  "tui-input",
 ]
 
