@@ -161,10 +161,15 @@ impl Widget for &App {
             InputMode::Editing => Color::Yellow.into(),
             InputMode::Username => Color::Blue.into(),
         };
+        let title = match self.input_mode {
+            InputMode::Normal => " Press <i> to insert | </> set username | <q> to quit ",
+            InputMode::Editing => " Press <ENTER> to submit | <ESC> to escape ",
+            InputMode::Username => " Press <ENTER> to submit | <ESC> to escape ",
+        };
         Paragraph::new(self.input.value())
             .style(style)
             .scroll((0, scroll as u16))
-            .block(Block::bordered().title(" Input "))
+            .block(Block::bordered().title(title))
             .render(outer_layout[1], buf);
     }
 }
