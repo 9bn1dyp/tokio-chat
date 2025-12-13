@@ -10,6 +10,7 @@ use ratatui::{
     text::Line,
     widgets::{Block, Paragraph, Widget},
 };
+use std::error::Error;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpStream;
@@ -98,6 +99,10 @@ impl App {
     }
 
     fn push_message(&mut self) {
+        // check if msg null
+        if self.input.value().is_empty() {
+            return;
+        }
         // format to Message type here
         let msg = Message {
             username: User(self.username.clone()),
@@ -109,6 +114,10 @@ impl App {
     }
 
     fn push_username(&mut self) {
+        // check if username null
+        if self.input.value().is_empty() {
+            return;
+        }
         self.username = self.input.value_and_reset();
         self.input_mode = InputMode::Normal;
     }
@@ -224,11 +233,11 @@ fn ui(sender: Sender<Message>, receiver: Receiver<Message>) -> anyhow::Result<()
     app_result
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     let (s1, r1) = unbounded::<Message>();
     let (s2, r2) = unbounded::<Message>();
-    let stream = TcpStream::connect("127.0.0.1:8080").unwrap();
-    let stream2 = stream.try_clone().unwrap();
+    let stream = TcpStream::connect("127.0.0.1:8080")?;
+    let stream2 = stream.try_clone()?;
 
     // UI sends to Server, Server sends to Receiver
     let ui_handle = thread::spawn(|| ui(s1, r2));
@@ -238,6 +247,7 @@ fn main() {
     ui_handle.join().unwrap().unwrap();
     server_rec_handle.join().unwrap();
     server_sen_handle.join().unwrap().unwrap();
+    Ok(())
 }
 
 #[cfg(test)]
