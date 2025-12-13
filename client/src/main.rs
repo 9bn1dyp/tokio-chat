@@ -1,5 +1,4 @@
-use client::Message;
-use client::User;
+use client::{AppError, Message, User};
 use crossbeam::channel::{Receiver, Sender, unbounded};
 use ratatui::{
     DefaultTerminal, Frame,
@@ -27,6 +26,7 @@ pub struct App {
     exit: bool,
     sender: Sender<Message>,
     receiver: Receiver<Message>,
+    error: Option<AppError>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +43,7 @@ impl App {
             self.ui_rec();
 
             terminal.draw(|frame| self.draw(frame))?;
-            self.handle_events()?;
+            self.handle_events();
         }
         Ok(())
     }
@@ -52,9 +52,15 @@ impl App {
         frame.render_widget(self, frame.area());
     }
 
-    // see event poll
-    fn handle_events(&mut self) -> anyhow::Result<()> {
-        let event = event::read()?;
+    fn handle_events(&mut self) {
+        let event = match event::read() {
+            Ok(e) => e,
+            Err(_) => {
+                self.error = Some(AppError::EventRead);
+                return;
+            }
+        };
+
         if let Event::Key(key) = event {
             match self.input_mode {
                 // Normal mode keyboard handling
@@ -83,7 +89,6 @@ impl App {
                 },
             }
         }
-        Ok(())
     }
 
     fn start_editing(&mut self) {
@@ -99,26 +104,37 @@ impl App {
     }
 
     fn push_message(&mut self) {
+        let input = self.input.value_and_reset();
+
         // check if msg null
-        if self.input.value().is_empty() {
+        if input.is_empty() {
             return;
         }
+
         // format to Message type here
         let msg = Message {
             username: User(self.username.clone()),
-            message: self.input.value_and_reset(),
+            message: input,
         };
+
         // send input text via server sender
-        self.sender.send(msg).unwrap();
+        // If error set error
+        if self.sender.send(msg).is_err() {
+            self.error = Some(AppError::Crossbeam)
+        }
+
         self.input_mode = InputMode::Normal;
     }
 
     fn push_username(&mut self) {
-        // check if username null
-        if self.input.value().is_empty() {
+        let input = self.input.value_and_reset();
+
+        // check if msg null
+        if input.is_empty() {
             return;
         }
-        self.username = self.input.value_and_reset();
+
+        self.username = input;
         self.input_mode = InputMode::Normal;
     }
 
@@ -165,7 +181,7 @@ impl Widget for &App {
         // Bottom box for input
         let width = area.width.max(3) - 3;
         let scroll = self.input.visual_scroll(width as usize);
-        let style = match self.input_mode {
+        let mut style = match self.input_mode {
             InputMode::Normal => Style::default(),
             InputMode::Editing => Color::Yellow.into(),
             InputMode::Username => Color::Blue.into(),
@@ -175,6 +191,12 @@ impl Widget for &App {
             InputMode::Editing => " Press <ENTER> to submit | <ESC> to escape ",
             InputMode::Username => " Press <ENTER> to submit | <ESC> to escape ",
         };
+
+        // Optional red style if error present
+        if self.error.is_some() {
+            style = Color::Red.into();
+        }
+
         Paragraph::new(self.input.value())
             .style(style)
             .scroll((0, scroll as u16))
@@ -184,26 +206,22 @@ impl Widget for &App {
 }
 
 // receive from ui send to server
-fn server_rec(mut stream: TcpStream, receiver: Receiver<Message>) {
+fn server_rec(mut stream: TcpStream, receiver: Receiver<Message>) -> anyhow::Result<()> {
     while let Ok(value) = receiver.recv() {
         // append \n and format to json
-        stream
-            .write_all(
-                format!(
-                    "{{\"username\":\"{}\",\"message\":\"{}\"}}\n",
-                    value.username, value.message
-                )
-                .as_bytes(),
-            )
-            .unwrap();
+        let msg = serde_json::to_string(&value)?;
+        if let Err(e) = writeln!(stream, "{}", msg) {
+            return Err(e.into());
+        }
     }
+    Ok(())
 }
 
 // receive from server send to ui
 fn server_sen(mut stream: TcpStream, sender: Sender<Message>) -> anyhow::Result<()> {
     let mut buf = [0u8; 1024];
     loop {
-        let n = stream.read(&mut buf).unwrap();
+        let n = stream.read(&mut buf)?;
         if n == 0 {
             break;
         }
@@ -212,7 +230,7 @@ fn server_sen(mut stream: TcpStream, sender: Sender<Message>) -> anyhow::Result<
         // try convert to message struct
         let message_struct: Message = serde_json::from_str(&msg)?;
         // send to ui receiver
-        sender.send(message_struct).unwrap();
+        sender.send(message_struct)?;
     }
     Ok(())
 }
@@ -227,6 +245,7 @@ fn ui(sender: Sender<Message>, receiver: Receiver<Message>) -> anyhow::Result<()
         exit: false,
         sender,
         receiver,
+        error: None,
     }
     .run(&mut terminal);
     ratatui::restore();
@@ -234,19 +253,36 @@ fn ui(sender: Sender<Message>, receiver: Receiver<Message>) -> anyhow::Result<()
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // channels
     let (s1, r1) = unbounded::<Message>();
     let (s2, r2) = unbounded::<Message>();
+
+    // tcp connections
     let stream = TcpStream::connect("127.0.0.1:8080")?;
     let stream2 = stream.try_clone()?;
 
     // UI sends to Server, Server sends to Receiver
-    let ui_handle = thread::spawn(|| ui(s1, r2));
-    let server_rec_handle = thread::spawn(move || server_rec(stream, r1));
-    let server_sen_handle = thread::spawn(move || server_sen(stream2, s2));
+    let ui_handle = thread::Builder::new()
+        .name("ui".into())
+        .spawn(|| ui(s1, r2))?;
+    let server_rec_handle = thread::Builder::new()
+        .name("server_rec".into())
+        .spawn(move || server_rec(stream, r1))?;
+    let server_sen_handle = thread::Builder::new()
+        .name("server_sen".into())
+        .spawn(move || server_sen(stream2, s2))?;
 
-    ui_handle.join().unwrap().unwrap();
-    server_rec_handle.join().unwrap();
-    server_sen_handle.join().unwrap().unwrap();
+    // join to main and map errors
+    ui_handle
+        .join()
+        .map_err(|e| format!("ui thread panicked: {:?}", e))??;
+    server_rec_handle
+        .join()
+        .map_err(|e| format!("server_rec thread panicked: {:?}", e))??;
+    server_sen_handle
+        .join()
+        .map_err(|e| format!("server_sen send thread panicked: {:?}", e))??;
+
     Ok(())
 }
 

@@ -16,3 +16,21 @@ impl Display for User {
         write!(f, "{}", self.0)
     }
 }
+
+#[derive(Debug)]
+pub enum AppError {
+    Crossbeam,
+    TCPServer,
+    EventRead,
+}
+
+impl Display for AppError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            AppError::Crossbeam => "Crossbeam",
+            AppError::TCPServer => "TCPServer",
+            AppError::EventRead => "EventRead",
+        };
+        write!(f, "{}", text)
+    }
+}
