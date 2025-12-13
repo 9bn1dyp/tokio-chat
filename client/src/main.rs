@@ -33,6 +33,7 @@ enum InputMode {
     #[default]
     Normal,
     Editing,
+    Username,
 }
 
 impl App {
@@ -57,7 +58,8 @@ impl App {
             match self.input_mode {
                 // Normal mode keyboard handling
                 InputMode::Normal => match key.code {
-                    KeyCode::Char('e') => self.start_editing(),
+                    KeyCode::Char('i') => self.start_editing(),
+                    KeyCode::Char('/') => self.start_username(),
                     KeyCode::Char('q') => self.exit(),
                     _ => {}
                 },
@@ -65,6 +67,14 @@ impl App {
                 // Editing mode keyboard handling
                 InputMode::Editing => match key.code {
                     KeyCode::Enter => self.push_message(),
+                    KeyCode::Esc => self.stop_editing(),
+                    _ => {
+                        self.input.handle_event(&event);
+                    }
+                },
+
+                InputMode::Username => match key.code {
+                    KeyCode::Enter => self.push_username(),
                     KeyCode::Esc => self.stop_editing(),
                     _ => {
                         self.input.handle_event(&event);
@@ -79,6 +89,10 @@ impl App {
         self.input_mode = InputMode::Editing
     }
 
+    fn start_username(&mut self) {
+        self.input_mode = InputMode::Username
+    }
+
     fn stop_editing(&mut self) {
         self.input_mode = InputMode::Normal
     }
@@ -91,6 +105,11 @@ impl App {
         };
         // send input text via server sender
         self.sender.send(msg).unwrap();
+    }
+
+    fn push_username(&mut self) {
+        self.username = self.input.value_and_reset();
+        self.input_mode = InputMode::Normal;
     }
 
     fn exit(&mut self) {
@@ -139,6 +158,7 @@ impl Widget for &App {
         let style = match self.input_mode {
             InputMode::Normal => Style::default(),
             InputMode::Editing => Color::Yellow.into(),
+            InputMode::Username => Color::Blue.into(),
         };
         Paragraph::new(self.input.value())
             .style(style)
