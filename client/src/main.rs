@@ -105,6 +105,7 @@ impl App {
         };
         // send input text via server sender
         self.sender.send(msg).unwrap();
+        self.input_mode = InputMode::Normal;
     }
 
     fn push_username(&mut self) {
